@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-import flows as fnn
+from context import flows as fnn
 
 EPS = 1e-5
 BATCH_SIZE = 32
