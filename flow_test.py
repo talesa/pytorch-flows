@@ -154,6 +154,17 @@ class TestFlow(unittest.TestCase):
                         'Sequential Det is not zero for the eval run.')
         self.assertTrue((x - z).abs().max() < EPS,
                         'Sequential is wrong for the eval run.')
+        
+    def testRadial(self):
+        m1 = fnn.FlowSequential(fnn.RadialFlow(NUM_INPUTS))
+
+        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
+
+        y, logdets = m1(x)
+        z, inv_logdets = m1(y, mode='inverse')
+
+        self.assertTrue((x - z).abs().max() < EPS, 'Radial is wrong.')
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'Radial Det is not zero.')
 
 
 if __name__ == "__main__":

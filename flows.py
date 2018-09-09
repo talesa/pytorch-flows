@@ -1,10 +1,13 @@
 import types
 
+from collections import defaultdict
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+EPS = 1e-7
 
 def get_mask(in_features, out_features, in_flow_features, mask_type=None):
     """
@@ -57,7 +60,7 @@ class MADE(nn.Module):
             nn.MaskedLinear(num_hidden, num_hidden, hidden_mask), nn.ReLU(),
             nn.MaskedLinear(num_hidden, num_inputs * 2, output_mask))
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             x = self.main(inputs)
 
@@ -89,7 +92,7 @@ class BatchNormFlow(nn.Module):
         self.register_buffer('running_mean', torch.zeros(num_inputs))
         self.register_buffer('running_var', torch.ones(num_inputs))
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             if self.training:
                 self.batch_mean = inputs.mean(0)
@@ -142,7 +145,7 @@ class ActNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(num_inputs))
         self.initialized = False
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if self.initialized == False:
             self.weight.data.copy_(torch.log(1.0 / (inputs.std(0) + 1e-12)))
             self.bias.data.copy_(inputs.mean(0))
@@ -169,7 +172,7 @@ class InvertibleMM(nn.Module):
         self.W = nn.Parameter(torch.Tensor(num_inputs, num_inputs))
         nn.init.orthogonal_(self.W)
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             return inputs @ self.W, torch.log(torch.abs(torch.det(
                 self.W))).unsqueeze(0).unsqueeze(0).repeat(inputs.size(0), 1)
@@ -190,7 +193,7 @@ class Shuffle(nn.Module):
         self.perm = np.random.permutation(num_inputs)
         self.inv_perm = np.argsort(self.perm)
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             return inputs[:, self.perm], torch.zeros(
                 inputs.size(0), 1, device=inputs.device)
@@ -210,7 +213,7 @@ class Reverse(nn.Module):
         self.perm = np.array(np.arange(0, num_inputs)[::-1])
         self.inv_perm = np.argsort(self.perm)
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             return inputs[:, self.perm], torch.zeros(
                 inputs.size(0), 1, device=inputs.device)
@@ -239,7 +242,7 @@ class CouplingLayer(nn.Module):
                 m.bias.data.fill_(0)
                 nn.init.orthogonal_(m.weight.data)
 
-    def forward(self, inputs, mode='direct'):
+    def forward(self, inputs, mode='direct', **kwargs):
         if mode == 'direct':
             x_a, x_b = inputs.chunk(2, dim=-1)
             log_s, t = self.main(x_b).chunk(2, dim=-1)
@@ -257,28 +260,119 @@ class CouplingLayer(nn.Module):
             return torch.cat([x_a, x_b], dim=-1), -log_s.sum(-1, keepdim=True)
 
 
+class RadialFlow(nn.Module):
+    """ An implementation of the radial layer from
+    Variational Inference with Normalizing Flows
+    (https://arxiv.org/abs/1505.05770).
+    """
+
+    def __init__(self, num_inputs):
+        super(RadialFlow, self).__init__()
+        self.log_a = nn.Parameter(torch.zeros(1, 1))
+        # bhat is b before reparametrization
+        self.bhat = nn.Parameter((torch.ones(1, 1).exp() - torch.ones(1, 1)).log())
+        self.z0 = nn.Parameter(torch.zeros(1, num_inputs))
+        self.num_inputs = num_inputs
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        if params is None:
+            return self.Fforward(inputs, mode, self.num_inputs, self.z0, self.log_a, self.bhat)
+        return self.Fforward(inputs, mode, self.num_inputs, **params)
+
+    @staticmethod
+    def Fforward(inputs, mode, num_inputs, z0, log_a, bhat):
+        """ Functional version of the forward function. """
+        d = float(num_inputs)
+        a = log_a.exp()
+        # according to the Appendix in the paper
+        b = -a + torch.nn.functional.softplus(bhat)
+        if mode == 'direct':
+            z = inputs
+            z_z0 = z - z0
+            r = z_z0.norm(dim=-1, keepdim=True) + EPS  # s
+            h = 1 / (a + r)
+            hprime = -1. / (a + r).pow(2)
+            logdet = (d-1)*(1. + b * h).log() + (1. + b * h + b * hprime * r).log()
+            output = inputs + b * z_z0 * h
+            return output, logdet
+        else:
+            y = inputs
+            y_z0 = y - z0
+            c = y_z0.norm(dim=-1, keepdim=True)
+            B = a + b - c
+            sqrt_delta = (B.pow(2) + 4 * a * c).sqrt()
+            r = 0.5 * (-B + sqrt_delta) + EPS
+            h = 1 / (a + r)
+            zhat = y_z0 / (r * (1 + b / (a + r)))
+            hprime = -1. / (a + r).pow(2)
+            output = z0 + r * zhat
+            inv_logdet = -((d - 1) * (1. + b * h).log() + (1. + b * h + b * hprime * r).log())
+            return output, inv_logdet
+
+
 class FlowSequential(nn.Sequential):
     """ A sequential container for flows.
     In addition to a forward pass it implements a backward pass and
     computes log jacobians.
+    Allows building hypernetworks by passing params to the forward() function
+    rather than using values provided by the module's nn.Parameter objects.
     """
 
-    def forward(self, inputs, mode='direct', logdets=None):
+    def parameters_nelement(self):
+        """ Returns the total number of elements of the parameters in the Module. """
+        return sum(p.nelement() for p in self.parameters())
+
+    def forward(self, inputs, mode='direct', logdets=None, params=None):
         """ Performs a forward or backward pass for flow modules.
+        Allows building hypernetworks by passing params.
+        If params==None it uses values provided by the module's nn.Parameter objects.
         Args:
             inputs: a tuple of inputs and logdets
             mode: to run direct computation or inverse
+            params: 2dim tensor with shape [batch_size, parameters_nelement]
         """
         if logdets is None:
             logdets = torch.zeros(inputs.size(0), 1, device=inputs.device)
+
+        params_per_module = defaultdict(lambda: None)
+        if params is not None:
+            params_per_module = defaultdict(dict)
+            i = 0
+            for module_parameter_name, parameter in self.named_parameters():
+                module_name, parameter_name = module_parameter_name.split('.')
+                params_per_module[module_name][parameter_name] = \
+                    params[:,i:i+parameter.nelement()].reshape(-1, *parameter.shape[1:])
+                i += parameter.nelement()
+
         assert mode in ['direct', 'inverse']
         if mode == 'direct':
-            for module in self._modules.values():
-                inputs, logdet = module(inputs, mode)
+            for module_name, module_object in self._modules.items():
+                inputs, logdet = module_object(inputs, mode, params=params_per_module[module_name])
                 logdets += logdet
         else:
-            for module in reversed(self._modules.values()):
-                inputs, logdet = module(inputs, mode)
+            for module_name, module_object in reversed(self._modules.items()):
+                inputs, logdet = module_object(inputs, mode, params=params_per_module[module_name])
                 logdets += logdet
 
         return inputs, logdets
+
+
+class FlowDensityEstimator(torch.distributions.distribution.Distribution):
+    """ A density estimator able to evaluate log_prob and generate samples.
+    Requires specifying a base distribution.
+    """
+
+    def __init__(self, base_distribution, flow):
+        super(FlowDensityEstimator, self).__init__()
+        self.flow = flow
+        self.base_distribution = base_distribution
+
+    def log_prob(self, value, params=None):
+        y = value
+        x, inv_logdets = self.flow.forward(y, mode='inverse', params=params)
+        return self.base_distribution.log_prob(x) + inv_logdets
+
+    def sample(self, sample_shape, params=None):
+        x = self.base_distribution.sample(sample_shape)
+        y, _ = self.flow.forward(x, mode='direct', params=params)
+        return y
