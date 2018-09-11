@@ -282,6 +282,7 @@ class RadialFlow(nn.Module):
     @staticmethod
     def Fforward(inputs, mode, num_inputs, z0, log_a, bhat):
         """ Functional version of the forward function. """
+        assert inputs.shape[1] == num_inputs
         d = float(num_inputs)
         a = log_a.exp()
         # according to the Appendix in the paper
