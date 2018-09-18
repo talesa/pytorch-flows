@@ -320,13 +320,13 @@ class ExponentialFlow(nn.Module):
         assert inputs.shape[1] > 0
         if mode == 'direct':
             x = inputs
-            logdet = x.sum(dim=-1)
+            logdet = x.sum(dim=-1, keepdim=True)
             y = x.exp()
             return y, logdet
         else:
             y = inputs
             x = y.log()
-            inv_logdet = -x.sum(dim=-1)
+            inv_logdet = -x.sum(dim=-1, keepdim=True)
             return x, inv_logdet
 
 
