@@ -311,6 +311,25 @@ class RadialFlow(nn.Module):
             return output, inv_logdet
 
 
+class ExponentialFlow(nn.Module):
+    """ An implementation of a transformation y = exp(x).
+    Used to ensure the output is positive.
+    """
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] > 0
+        if mode == 'direct':
+            x = inputs
+            logdet = x.sum(dim=-1)
+            y = x.exp()
+            return y, logdet
+        else:
+            y = inputs
+            x = y.log()
+            inv_logdet = -x.sum(dim=-1)
+            return x, inv_logdet
+
+
 class FlowSequential(nn.Sequential):
     """ A sequential container for flows.
     In addition to a forward pass it implements a backward pass and
