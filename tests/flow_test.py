@@ -166,6 +166,17 @@ class TestFlow(unittest.TestCase):
         self.assertTrue((x - z).abs().max() < EPS, 'Radial is wrong.')
         self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'Radial Det is not zero.')
 
+    def testExponential(self):
+        m1 = fnn.ExponentialFlow()
+
+        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
+
+        y, logdets = m1(x)
+        z, inv_logdets = m1(y, mode='inverse')
+
+        self.assertTrue((x - z).abs().max() < EPS, 'Exponential is wrong.')
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'Exponential Det is not zero.')
+
 
 if __name__ == "__main__":
     unittest.main()
