@@ -270,7 +270,7 @@ class RadialFlow(nn.Module):
         super(RadialFlow, self).__init__()
         self.log_a = nn.Parameter(torch.zeros(1, 1))
         # bhat is b before reparametrization
-        self.bhat = nn.Parameter((torch.ones(1, 1).exp() - torch.ones(1, 1)).log())
+        self.bhat = nn.Parameter(torch.zeros(1, 1))
         self.z0 = nn.Parameter(torch.zeros(1, num_inputs))
         self.num_inputs = num_inputs
 
@@ -283,6 +283,10 @@ class RadialFlow(nn.Module):
     def Fforward(inputs, mode, num_inputs, z0, log_a, bhat):
         """ Functional version of the forward function. """
         assert inputs.shape[1] == num_inputs
+
+        # offset to make the flow an identity flow if all parameters are zeros
+        bhat = bhat + (torch.ones(1, 1).exp() - torch.ones(1, 1)).log()
+
         d = float(num_inputs)
         a = log_a.exp()
         # according to the Appendix in the paper
@@ -290,7 +294,7 @@ class RadialFlow(nn.Module):
         if mode == 'direct':
             z = inputs
             z_z0 = z - z0
-            r = z_z0.norm(dim=-1, keepdim=True) + EPS  # s
+            r = z_z0.norm(dim=-1, keepdim=True) + EPS
             h = 1 / (a + r)
             hprime = -1. / (a + r).pow(2)
             logdet = (d-1)*(1. + b * h).log() + (1. + b * h + b * hprime * r).log()
