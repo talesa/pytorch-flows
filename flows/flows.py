@@ -322,6 +322,7 @@ class ExponentialFlow(nn.Module):
 
     def forward(self, inputs, mode='direct', params=None, **kwargs):
         assert inputs.shape[1] > 0
+        if inputs.shape[1] > 1: print('warning, I dunno if this should work')
         if mode == 'direct':
             x = inputs
             logdet = x.sum(dim=-1, keepdim=True)
@@ -331,6 +332,26 @@ class ExponentialFlow(nn.Module):
             y = inputs
             x = y.log()
             inv_logdet = -x.sum(dim=-1, keepdim=True)
+            return x, inv_logdet
+
+
+class SigmoidFlow(nn.Module):
+    """ An implementation of a sigmoid transformation y = 1/(1+exp(-x)).
+    Used to ensure the output is within the range [0, 1].
+    """
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] > 0
+        if inputs.shape[1] > 1: print('warning, I dunno if this should work')
+        if mode == 'direct':
+            x = inputs
+            y = 1./(1.+(-x).exp())
+            logdet = (y.log()+(1-y).log()).sum(dim=-1, keepdim=True)
+            return y, logdet
+        else:
+            y = inputs
+            x = -(1./y-1.).log()
+            inv_logdet = -(y.log()+(1-y).log()).sum(dim=-1, keepdim=True)
             return x, inv_logdet
 
 
