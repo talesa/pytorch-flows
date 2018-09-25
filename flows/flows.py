@@ -355,6 +355,26 @@ class SigmoidFlow(nn.Module):
             return x, inv_logdet
 
 
+class SoftplusFlow(nn.Module):
+    """ An implementation of a softplus transformation y = log(1+exp(x)).
+    Used to ensure the output is positive.
+    """
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] > 0
+        if inputs.shape[1] > 1: print('warning, I dunno if this should work')
+        if mode == 'direct':
+            x = inputs
+            y = (1+x.exp()).log()
+            logdet = (1/(1+(-x).exp())).sum(dim=-1, keepdim=True)
+            return y, logdet
+        else:
+            y = inputs
+            x = (y.exp()-1).log()
+            inv_logdet = -(1/(1+(-x).exp())).sum(dim=-1, keepdim=True)
+            return x, inv_logdet
+
+
 class FlowSequential(nn.Sequential):
     """ A sequential container for flows.
     In addition to a forward pass it implements a backward pass and
