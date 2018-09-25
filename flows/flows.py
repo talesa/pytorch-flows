@@ -365,21 +365,13 @@ class SoftplusFlow(nn.Module):
         if inputs.shape[1] > 1: print('warning, I dunno if this should work')
         if mode == 'direct':
             x = inputs
-            if x > 20:
-                y = x
-                logdet = x.shape[1]
-            else:
-                y = (1+x.exp()).log()
-                logdet = (1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True)
+            y = torch.where(x > 20, x, (1+x.exp()).log())
+            logdet = torch.where(x > 20, x.shape[1], (1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
             return y, logdet
         else:
             y = inputs
-            if y > 20:
-                x = y
-                inv_logdet = -x.shape[1]
-            else:
-                x = (y.exp() - 1).log()
-                inv_logdet = -(1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True)
+            x = torch.where(y > 20, y, (y.exp() - 1).log())
+            inv_logdet = torch.where(y > 20, -x.shape[1], -(1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
             return x, inv_logdet
 
 
