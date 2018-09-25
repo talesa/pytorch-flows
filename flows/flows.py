@@ -366,12 +366,12 @@ class SoftplusFlow(nn.Module):
         if mode == 'direct':
             x = inputs
             y = torch.where(x > 20, x, (1+x.exp()).log())
-            logdet = torch.where(x > 20, torch.tensor(x.shape[1]), (1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
+            logdet = torch.where(x > 20, torch.tensor(x.shape[1], dtype=torch.float), (1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
             return y, logdet
         else:
             y = inputs
             x = torch.where(y > 20, y, (y.exp() - 1).log())
-            inv_logdet = torch.where(y > 20, torch.tensor(-x.shape[1]), -(1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
+            inv_logdet = torch.where(y > 20, torch.tensor(-x.shape[1], dtype=torch.float), -(1 / (1 + (-x).exp())).sum(dim=-1, keepdim=True))
             return x, inv_logdet
 
 
