@@ -355,6 +355,40 @@ class SigmoidFlow(nn.Module):
             return x, inv_logdet
 
 
+class LocAndScaleFlow(nn.Module):
+    """ An implementation of the radial layer from
+    Variational Inference with Normalizing Flows
+    (https://arxiv.org/abs/1505.05770).
+    """
+
+    def __init__(self, num_inputs):
+        super(LocAndScaleFlow, self).__init__()
+        self.loc = nn.Parameter(torch.zeros(1, num_inputs))
+        self.scale = nn.Parameter(torch.zeros(1, num_inputs))
+        self.num_inputs = num_inputs
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] == self.num_inputs
+        if params is None:
+            return self.Fforward(inputs, mode, self.num_inputs, self.loc, self.scale)
+        return self.Fforward(inputs, mode, self.num_inputs, **params)
+
+    @staticmethod
+    def Fforward(inputs, mode, num_inputs, loc, scale):
+        scale = scale + torch.ones(1, num_inputs)
+
+        if mode == 'direct':
+            x = inputs
+            y = loc + x * scale
+            logdet = scale.log().sum(dim=-1, keepdim=True)
+            return y, logdet
+        else:
+            y = inputs
+            x = (y-loc)/scale
+            inv_logdet = -scale.log().sum(dim=-1, keepdim=True)
+            return x, inv_logdet
+
+
 class SoftplusFlow(nn.Module):
     """ An implementation of a softplus transformation y = log(1+exp(x)).
     Used to ensure the output is positive.
