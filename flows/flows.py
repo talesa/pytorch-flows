@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import tensor
 
 EPS = 1e-7
 
@@ -352,6 +353,29 @@ class SigmoidFlow(nn.Module):
             y = inputs
             x = -(1./y-1.).log()
             inv_logdet = -(y.log()+(1-y).log()).sum(dim=-1, keepdim=True)
+            return x, inv_logdet
+
+
+class IdentitySigmoidFlow(nn.Module):
+    """ An implementation of a sigmoid transformation y=1/(1+exp(-z)), z=4.5(x-0.5).
+    Used to ensure the output is within the range [0, 1], different from SigmoidFlow
+    in that it applies a smaller transformation in the region close to x=0.5.
+    """
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] > 0
+        if inputs.shape[1] > 1: print('warning, I dunno if this should work')
+        if mode == 'direct':
+            x = inputs
+            z = 4.5*(x-0.5)
+            y = 1./(1.+(-z).exp())
+            logdet = (y.log()+(1-y).log()+tensor(4.5).log()).sum(dim=-1, keepdim=True)
+            return y, logdet
+        else:
+            y = inputs
+            z = -(1./y-1.).log()
+            x = z/4.5+0.5
+            inv_logdet = -(y.log()+(1-y).log()+tensor(4.5).log()).sum(dim=-1, keepdim=True)
             return x, inv_logdet
 
 
