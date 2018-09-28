@@ -360,6 +360,7 @@ class IdentitySigmoidFlow(nn.Module):
     """ An implementation of a sigmoid transformation y=1/(1+exp(-z)), z=4.5(x-0.5).
     Used to ensure the output is within the range [0, 1], different from SigmoidFlow
     in that it applies a smaller transformation in the region close to x=0.5.
+    https://www.desmos.com/calculator/z4viqqotai
     """
 
     def forward(self, inputs, mode='direct', params=None, **kwargs):
