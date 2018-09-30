@@ -389,52 +389,56 @@ class LinearSigmoidFlow(nn.Module):
     https://www.desmos.com/calculator/eaccyxzzuv
     """
 
+    def __init__(self, t=7.):
+        super(LinearSigmoidFlow, self).__init__()
+        self.t = tensor(t, dtype=torch.float)
+        self.i = torch.sigmoid(self.t)
+        self.q = 1. - self.i
+
     def forward(self, inputs, mode='direct', params=None, **kwargs):
         assert inputs.shape[1] > 0
         if inputs.shape[1] > 1: print('warning, I dunno if this should work')
 
-        t = tensor(4)
-        i = F.sigmoid(t)
-        q = 1 - i
-
+        t = self.t
+        i = self.i
+        q = self.q
 
         if mode == 'direct':
             x = inputs
 
             y = (1. - 2. * q) * x + q
             y = torch.where(x < 0.,
-                            F.sigmoid(x - t),
+                            torch.sigmoid(x - t),
                             y)
             y = torch.where(x < 1.,
                             y,
-                            F.sigmoid(x + t - 1.))
+                            torch.sigmoid(x + t - 1.))
 
             logdet = (1. - 2. * q).log() * x.shape[1]
-            logdet = torch.where(x < 0.,
-                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True),
-                                 logdet)
-            logdet = torch.where(x < 0,
-                                 logdet
-                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True))
+            logdet2 = (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True)
+            logdet = torch.where(x < 0., logdet2, logdet)
+            logdet = torch.where(x < 1., logdet,  logdet2)
             return y, logdet
         else:
             y = inputs
 
-            x = (y - q) / (1. - 2.*q)
-            x = torch.where(x < q,
+            if (y <= 0.).any():
+                raise Exception('Input to inverse sigmoid smaller than 0')
+            if (y >= 1.).any():
+                raise Exception('Input to inverse sigmoid larger than 1')
+
+            x = (y - q) / (1. - 2. * q)
+            x = torch.where(y <= q,
                             -(1. / y - 1).log() + t,
                             x)
-            x = torch.where(x < i,
+            x = torch.where(y <= i,
                             x,
                             -(1. / y - 1.).log() - t + 1.)
 
-            logdet = (1 - 2 * q).log() * x.shape[1]
-            logdet = torch.where(x < q,
-                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True),
-                                 logdet)
-            logdet = torch.where(x < i,
-                                 logdet
-                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True))
+            logdet = (1. - 2. * q).log() * x.shape[1]
+            logdet2 = (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True)
+            logdet = torch.where(x < q, logdet2, logdet)
+            logdet = torch.where(x < i, logdet, logdet2)
             inv_logdet = -logdet
             return x, inv_logdet
 
