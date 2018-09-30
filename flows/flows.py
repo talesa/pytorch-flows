@@ -381,6 +381,64 @@ class IdentitySigmoidFlow(nn.Module):
             return x, inv_logdet
 
 
+class LinearSigmoidFlow(nn.Module):
+    """ An implementation of a linear sigmoid transformation.
+    Used to ensure the output is within the range [0, 1], different from SigmoidFlow
+    in that it applies only a small transformation in the region [0,1].
+    For details see the desmos calculator below
+    https://www.desmos.com/calculator/eaccyxzzuv
+    """
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] > 0
+        if inputs.shape[1] > 1: print('warning, I dunno if this should work')
+
+        t = tensor(4)
+        i = F.sigmoid(t)
+        q = 1 - i
+
+
+        if mode == 'direct':
+            x = inputs
+
+            y = (1. - 2. * q) * x + q
+            y = torch.where(x < 0.,
+                            F.sigmoid(x - t),
+                            y)
+            y = torch.where(x < 1.,
+                            y,
+                            F.sigmoid(x + t - 1.))
+
+            logdet = (1. - 2. * q).log() * x.shape[1]
+            logdet = torch.where(x < 0.,
+                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True),
+                                 logdet)
+            logdet = torch.where(x < 0,
+                                 logdet
+                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True))
+            return y, logdet
+        else:
+            y = inputs
+
+            x = (y - q) / (1. - 2.*q)
+            x = torch.where(x < q,
+                            -(1. / y - 1).log() + t,
+                            x)
+            x = torch.where(x < i,
+                            x,
+                            -(1. / y - 1.).log() - t + 1.)
+
+            logdet = (1 - 2 * q).log() * x.shape[1]
+            logdet = torch.where(x < q,
+                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True),
+                                 logdet)
+            logdet = torch.where(x < i,
+                                 logdet
+                                 (y.log() + (1. - y).log()).sum(dim=-1, keepdim=True))
+            inv_logdet = -logdet
+            return x, inv_logdet
+
+
 class LocAndScaleFlow(nn.Module):
     """ An implementation of the radial layer from
     Variational Inference with Normalizing Flows
