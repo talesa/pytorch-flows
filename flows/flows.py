@@ -562,8 +562,7 @@ class FlowDensityEstimator(torch.distributions.distribution.Distribution):
             inv_logdets = inv_logdets.sum(dim=1)
         assert inv_logdets.shape == log_prob.shape
         log_prob += inv_logdets
-        # return torch.clamp(log_prob, -1e38, 1e38)
-        return log_prob
+        return torch.clamp(log_prob, -1e38, 1e38)
 
     def sample(self, sample_shape, params=None):
         x = self.base_distribution.sample(sample_shape)
