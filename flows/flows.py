@@ -284,7 +284,8 @@ class RadialFlow(nn.Module):
     @staticmethod
     def Fforward(inputs, mode, num_inputs, z0, log_a, bhat):
         """ Functional version of the forward function. """
-        assert inputs.shape[1] == num_inputs
+        if len(inputs.shape) > 1:
+            assert inputs.shape[1] == num_inputs
 
         # offset to make the flow an identity flow if all parameters are zeros
         bhat = bhat + (torch.ones(1, 1).exp() - torch.ones(1, 1)).log()
