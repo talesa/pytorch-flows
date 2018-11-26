@@ -566,13 +566,21 @@ class FlowDensityEstimator(torch.distributions.distribution.Distribution):
         return torch.clamp(log_prob, -1e38, 1e38)
 
     def sample(self, sample_shape, params=None):
-        x = self.base_distribution.sample(sample_shape)
+        if len(sample_shape) > 0 and sample_shape[0] % params.shape[0] == 0:
+            shape = sample_shape
+        else:
+            shape = (params.shape[0],)
+        x = self.base_distribution.sample(shape)
         y, _ = self.flow.forward(x, mode='direct', params=params)
         return y
 
     def rsample(self, sample_shape, params=None):
         if not self.base_distribution.has_rsample:
             raise NotImplemented()
-        x = self.base_distribution.rsample(sample_shape)
+        if len(sample_shape) > 0 and sample_shape[0] % params.shape[0] == 0:
+            shape = sample_shape
+        else:
+            shape = (params.shape[0],)
+        x = self.base_distribution.rsample(shape)
         y, _ = self.flow.forward(x, mode='direct', params=params)
         return y
