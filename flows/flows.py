@@ -445,9 +445,7 @@ class LinearSigmoidFlow(nn.Module):
 
 
 class LocAndScaleFlow(nn.Module):
-    """ An implementation of the radial layer from
-    Variational Inference with Normalizing Flows
-    (https://arxiv.org/abs/1505.05770).
+    """ A loc and scale layer.
     """
 
     def __init__(self, num_inputs):
@@ -475,6 +473,35 @@ class LocAndScaleFlow(nn.Module):
             y = inputs
             x = (y-loc)/scale
             inv_logdet = -scale.log().sum(dim=-1, keepdim=True)
+            return x, inv_logdet
+
+
+class OffsetFlow(nn.Module):
+    """ A flow layer adding an offset.
+    """
+
+    def __init__(self, num_inputs):
+        super(OffsetFlow, self).__init__()
+        self.loc = nn.Parameter(torch.zeros(1, num_inputs))
+        self.num_inputs = num_inputs
+
+    def forward(self, inputs, mode='direct', params=None, **kwargs):
+        assert inputs.shape[1] == self.num_inputs
+        if params is None:
+            return self.Fforward(inputs, mode, self.num_inputs, self.loc)
+        return self.Fforward(inputs, mode, self.num_inputs, **params)
+
+    @staticmethod
+    def Fforward(inputs, mode, num_inputs, loc):
+        if mode == 'direct':
+            x = inputs
+            y = loc + x
+            logdet = 0.
+            return y, logdet
+        else:
+            y = inputs
+            x = y - loc
+            inv_logdet = 0.
             return x, inv_logdet
 
 
