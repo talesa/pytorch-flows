@@ -1,8 +1,10 @@
+import math
 import types
 
 from collections import defaultdict
 
 import numpy as np
+import scipy as sp
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,13 +32,27 @@ def get_mask(in_features, out_features, in_flow_features, mask_type=None):
     return (out_degrees.unsqueeze(-1) >= in_degrees.unsqueeze(0)).float()
 
 
-class MaskedLinear(nn.Linear):
-    def __init__(self, in_features, out_features, mask, bias=True):
-        super(MaskedLinear, self).__init__(in_features, out_features, bias)
+class MaskedLinear(nn.Module):
+    def __init__(self,
+                 in_features,
+                 out_features,
+                 mask,
+                 cond_in_features=None,
+                 bias=True):
+        super(MaskedLinear, self).__init__()
+        self.linear = nn.Linear(in_features, out_features)
+        if cond_in_features is not None:
+            self.cond_linear = nn.Linear(
+                cond_in_features, out_features, bias=False)
+
         self.register_buffer('mask', mask)
 
-    def forward(self, inputs):
-        return F.linear(inputs, self.weight * self.mask, self.bias)
+    def forward(self, inputs, cond_inputs=None):
+        output = F.linear(inputs, self.linear.weight * self.mask,
+                          self.linear.bias)
+        if cond_inputs is not None:
+            output += self.cond_linear(cond_inputs)
+        return output
 
 
 nn.MaskedLinear = MaskedLinear
@@ -47,8 +63,15 @@ class MADE(nn.Module):
     (https://arxiv.org/abs/1502.03509s).
     """
 
-    def __init__(self, num_inputs, num_hidden):
+    def __init__(self,
+                 num_inputs,
+                 num_hidden,
+                 num_cond_inputs=None,
+                 act='relu'):
         super(MADE, self).__init__()
+
+        activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh}
+        act_func = activations[act]
 
         input_mask = get_mask(
             num_inputs, num_hidden, num_inputs, mask_type='input')
@@ -56,24 +79,56 @@ class MADE(nn.Module):
         output_mask = get_mask(
             num_hidden, num_inputs * 2, num_inputs, mask_type='output')
 
-        self.main = nn.Sequential(
-            nn.MaskedLinear(num_inputs, num_hidden, input_mask), nn.ReLU(),
-            nn.MaskedLinear(num_hidden, num_hidden, hidden_mask), nn.ReLU(),
-            nn.MaskedLinear(num_hidden, num_inputs * 2, output_mask))
+        self.joiner = nn.MaskedLinear(num_inputs, num_hidden, input_mask,
+                                      num_cond_inputs)
 
-    def forward(self, inputs, mode='direct', **kwargs):
+        self.trunk = nn.Sequential(act_func(),
+                                   nn.MaskedLinear(num_hidden, num_hidden,
+                                                   hidden_mask), act_func(),
+                                   nn.MaskedLinear(num_hidden, num_inputs * 2,
+                                                   output_mask))
+
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if mode == 'direct':
-            x = self.main(inputs)
+            h = self.joiner(inputs, cond_inputs)
+            m, a = self.trunk(h).chunk(2, 1)
+            u = (inputs - m) * torch.exp(-a)
+            return u, -a.sum(-1, keepdim=True)
 
-            m, a = x.chunk(2, 1)
-
-            u = (inputs - m) * torch.exp(a)
-            return u, a.sum(-1, keepdim=True)
         else:
-            # TODO:
-            # Sampling with MADE is tricky.
-            # We need to perform N forward passes.
-            raise NotImplementedError
+            x = torch.zeros_like(inputs)
+            for i_col in range(inputs.shape[1]):
+                h = self.joiner(x, cond_inputs)
+                m, a = self.trunk(h).chunk(2, 1)
+                x[:, i_col] = inputs[:, i_col] * torch.exp(
+                    a[:, i_col]) + m[:, i_col]
+            return x, -a.sum(-1, keepdim=True)
+
+
+class Sigmoid(nn.Module):
+    def __init__(self):
+        super(Sigmoid, self).__init__()
+
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
+        if mode == 'direct':
+            s = torch.sigmoid
+            return s(inputs), torch.log(s(inputs) * (1 - s(inputs))).sum(
+                -1, keepdim=True)
+        else:
+            return torch.log(inputs /
+                             (1 - inputs)), -torch.log(inputs - inputs**2).sum(
+                                 -1, keepdim=True)
+
+
+class Logit(Sigmoid):
+    def __init__(self):
+        super(Logit, self).__init__()
+
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
+        if mode == 'direct':
+            return super(Logit, self).forward(inputs, 'inverse')
+        else:
+            return super(Logit, self).forward(inputs, 'direct')
 
 
 class BatchNormFlow(nn.Module):
@@ -93,7 +148,7 @@ class BatchNormFlow(nn.Module):
         self.register_buffer('running_mean', torch.zeros(num_inputs))
         self.register_buffer('running_var', torch.ones(num_inputs))
 
-    def forward(self, inputs, mode='direct', **kwargs):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if mode == 'direct':
             if self.training:
                 self.batch_mean = inputs.mean(0)
@@ -146,7 +201,7 @@ class ActNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(num_inputs))
         self.initialized = False
 
-    def forward(self, inputs, mode='direct', **kwargs):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if self.initialized == False:
             self.weight.data.copy_(torch.log(1.0 / (inputs.std(0) + 1e-12)))
             self.bias.data.copy_(inputs.mean(0))
@@ -173,13 +228,62 @@ class InvertibleMM(nn.Module):
         self.W = nn.Parameter(torch.Tensor(num_inputs, num_inputs))
         nn.init.orthogonal_(self.W)
 
-    def forward(self, inputs, mode='direct', **kwargs):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if mode == 'direct':
-            return inputs @ self.W, torch.log(torch.abs(torch.det(
-                self.W))).unsqueeze(0).unsqueeze(0).repeat(inputs.size(0), 1)
+            return inputs @ self.W, torch.slogdet(
+                self.W)[-1].unsqueeze(0).unsqueeze(0).repeat(
+                    inputs.size(0), 1)
         else:
-            return inputs @ torch.inverse(self.W), -torch.log(
-                torch.abs(torch.det(self.W))).unsqueeze(0).unsqueeze(0).repeat(
+            return inputs @ torch.inverse(self.W), -torch.slogdet(
+                self.W)[-1].unsqueeze(0).unsqueeze(0).repeat(
+                    inputs.size(0), 1)
+
+
+class LUInvertibleMM(nn.Module):
+    """ An implementation of a invertible matrix multiplication
+    layer from Glow: Generative Flow with Invertible 1x1 Convolutions
+    (https://arxiv.org/abs/1807.03039).
+    """
+
+    def __init__(self, num_inputs):
+        super(LUInvertibleMM, self).__init__()
+        self.W = torch.Tensor(num_inputs, num_inputs)
+        nn.init.orthogonal_(self.W)
+        self.L_mask = torch.tril(torch.ones(self.W.size()), -1)
+        self.U_mask = self.L_mask.t().clone()
+
+        P, L, U = sp.linalg.lu(self.W.numpy())
+        self.P = torch.from_numpy(P)
+        self.L = nn.Parameter(torch.from_numpy(L))
+        self.U = nn.Parameter(torch.from_numpy(U))
+
+        S = np.diag(U)
+        sign_S = np.sign(S)
+        log_S = np.log(abs(S))
+        self.sign_S = torch.from_numpy(sign_S)
+        self.log_S = nn.Parameter(torch.from_numpy(log_S))
+
+        self.I = torch.eye(self.L.size(0))
+
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
+        if str(self.L_mask.device) != str(self.L.device):
+            self.L_mask = self.L_mask.to(self.L.device)
+            self.U_mask = self.U_mask.to(self.L.device)
+            self.I = self.I.to(self.L.device)
+            self.P = self.P.to(self.L.device)
+            self.sign_S = self.sign_S.to(self.L.device)
+
+        L = self.L * self.L_mask + self.I
+        U = self.U * self.U_mask + torch.diag(
+            self.sign_S * torch.exp(self.log_S))
+        W = self.P @ L @ U
+
+        if mode == 'direct':
+            return inputs @ W, self.log_S.sum().unsqueeze(0).unsqueeze(
+                0).repeat(inputs.size(0), 1)
+        else:
+            return inputs @ torch.inverse(
+                W), -self.log_S.sum().unsqueeze(0).unsqueeze(0).repeat(
                     inputs.size(0), 1)
 
 
@@ -194,7 +298,7 @@ class Shuffle(nn.Module):
         self.perm = np.random.permutation(num_inputs)
         self.inv_perm = np.argsort(self.perm)
 
-    def forward(self, inputs, mode='direct', **kwargs):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if mode == 'direct':
             return inputs[:, self.perm], torch.zeros(
                 inputs.size(0), 1, device=inputs.device)
@@ -214,7 +318,7 @@ class Reverse(nn.Module):
         self.perm = np.array(np.arange(0, num_inputs)[::-1])
         self.inv_perm = np.argsort(self.perm)
 
-    def forward(self, inputs, mode='direct', **kwargs):
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
         if mode == 'direct':
             return inputs[:, self.perm], torch.zeros(
                 inputs.size(0), 1, device=inputs.device)
@@ -228,37 +332,58 @@ class CouplingLayer(nn.Module):
     from RealNVP (https://arxiv.org/abs/1605.08803).
     """
 
-    def __init__(self, num_inputs, num_hidden=64):
+    def __init__(self,
+                 num_inputs,
+                 num_hidden,
+                 mask,
+                 num_cond_inputs=None,
+                 s_act='tanh',
+                 t_act='relu'):
         super(CouplingLayer, self).__init__()
 
         self.num_inputs = num_inputs
+        self.mask = mask
 
-        self.main = nn.Sequential(
-            nn.Linear(num_inputs // 2, num_hidden), nn.ReLU(),
-            nn.Linear(num_hidden, num_hidden), nn.ReLU(),
-            nn.Linear(num_hidden, 2 * (self.num_inputs - num_inputs // 2)))
+        activations = {'relu': nn.ReLU, 'sigmoid': nn.Sigmoid, 'tanh': nn.Tanh}
+        s_act_func = activations[s_act]
+        t_act_func = activations[t_act]
+
+        if num_cond_inputs is not None:
+            total_inputs = num_inputs + num_cond_inputs
+        else:
+            total_inputs = num_inputs
+
+        self.scale_net = nn.Sequential(
+            nn.Linear(total_inputs, num_hidden), s_act_func(),
+            nn.Linear(num_hidden, num_hidden), s_act_func(),
+            nn.Linear(num_hidden, num_inputs))
+        self.translate_net = nn.Sequential(
+            nn.Linear(total_inputs, num_hidden), t_act_func(),
+            nn.Linear(num_hidden, num_hidden), t_act_func(),
+            nn.Linear(num_hidden, num_inputs))
 
         def init(m):
             if isinstance(m, nn.Linear):
                 m.bias.data.fill_(0)
                 nn.init.orthogonal_(m.weight.data)
 
-    def forward(self, inputs, mode='direct', **kwargs):
-        if mode == 'direct':
-            x_a, x_b = inputs.chunk(2, dim=-1)
-            log_s, t = self.main(x_b).chunk(2, dim=-1)
-            s = torch.exp(log_s)
+    def forward(self, inputs, cond_inputs=None, mode='direct'):
+        mask = self.mask
 
-            y_a = x_a * s + t
-            y_b = x_b
-            return torch.cat([y_a, y_b], dim=-1), log_s.sum(-1, keepdim=True)
+        masked_inputs = inputs * mask
+        if cond_inputs is not None:
+            masked_inputs = torch.cat([masked_inputs, cond_inputs], -1)
+
+        if mode == 'direct':
+            log_s = self.scale_net(masked_inputs) * (1 - mask)
+            t = self.translate_net(masked_inputs) * (1 - mask)
+            s = torch.exp(log_s)
+            return inputs * s + t, log_s.sum(-1, keepdim=True)
         else:
-            y_a, y_b = inputs.chunk(2, dim=-1)
-            log_s, t = self.main(y_b).chunk(2, dim=-1)
+            log_s = self.scale_net(masked_inputs) * (1 - mask)
+            t = self.translate_net(masked_inputs) * (1 - mask)
             s = torch.exp(-log_s)
-            x_a = (y_a - t) * s
-            x_b = y_b
-            return torch.cat([x_a, x_b], dim=-1), -log_s.sum(-1, keepdim=True)
+            return (inputs - t) * s, -log_s.sum(-1, keepdim=True)
 
 
 class RadialFlow(nn.Module):
@@ -537,7 +662,7 @@ class FlowSequential(nn.Sequential):
         """ Returns the total number of elements of the parameters in the Module. """
         return sum(p.nelement() for p in self.parameters())
 
-    def forward(self, inputs, mode='direct', logdets=None, params=None):
+    def forward(self, inputs, cond_inputs=None, mode='direct', logdets=None, params=None):
         """ Performs a forward or backward pass for flow modules.
         Allows building hypernetworks by passing params.
         If params==None it uses values provided by the module's nn.Parameter objects.
@@ -546,6 +671,8 @@ class FlowSequential(nn.Sequential):
             mode: to run direct computation or inverse
             params: 2dim tensor with shape [batch_size, parameters_nelement]
         """
+        self.num_inputs = inputs.size(-1)
+
         if logdets is None:
             logdets = torch.zeros(inputs.size(0), 1, device=inputs.device)
 
