@@ -8,11 +8,14 @@ EPS = 1e-5
 BATCH_SIZE = 32
 NUM_INPUTS = 11
 NUM_HIDDEN = 64
+mask = torch.arange(0, NUM_INPUTS) % 2
+mask = mask.unsqueeze(0)
 
 
 class TestFlow(unittest.TestCase):
     def testCoupling(self):
-        m1 = fnn.FlowSequential(fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN))
+        m1 = fnn.FlowSequential(
+            fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN, mask))
 
         x = torch.randn(BATCH_SIZE, NUM_INPUTS)
 
@@ -31,8 +34,21 @@ class TestFlow(unittest.TestCase):
         y, logdets = m1(x)
         z, inv_logdets = m1(y, mode='inverse')
 
-        self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'InvMM Det is not zero.')
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
+                        'InvMM Det is not zero.')
         self.assertTrue((x - z).abs().max() < EPS, 'InvMM is wrong.')
+
+    def testSigmoid(self):
+        m1 = fnn.FlowSequential(fnn.Sigmoid())
+
+        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
+
+        y, logdets = m1(x)
+        z, inv_logdets = m1(y, mode='inverse')
+
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
+                        'Sigmoid Det is not zero.')
+        self.assertTrue((x - z).abs().max() < EPS, 'Sigmoid is wrong.')
 
     def testActNorm(self):
         m1 = fnn.FlowSequential(fnn.ActNorm(NUM_INPUTS))
@@ -42,7 +58,8 @@ class TestFlow(unittest.TestCase):
         y, logdets = m1(x)
         z, inv_logdets = m1(y, mode='inverse')
 
-        self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'ActNorm Det is not zero.')
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
+                        'ActNorm Det is not zero.')
         self.assertTrue((x - z).abs().max() < EPS, 'ActNorm is wrong.')
 
         # Second run.
@@ -96,33 +113,8 @@ class TestFlow(unittest.TestCase):
     def testSequential(self):
         m1 = fnn.FlowSequential(
             fnn.ActNorm(NUM_INPUTS), fnn.InvertibleMM(NUM_INPUTS),
-            fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN))
+            fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN, mask))
 
-        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
-
-        y, logdets = m1(x)
-        z, inv_logdets = m1(y, mode='inverse')
-
-        self.assertTrue((logdets + inv_logdets).abs().max() < EPS, 'ActNorm Det is not zero.')
-        self.assertTrue((x - z).abs().max() < EPS, 'ActNorm is wrong.')
-
-        # Second run.
-        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
-
-        y, logdets = m1(x)
-        z, inv_logdets = m1(y, mode='inverse')
-
-        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
-                        'ActNorm Det is not zero for the second run.')
-        self.assertTrue((x - z).abs().max() < EPS,
-                        'ActNorm is wrong for the second run.')
-
-    def testSequentialBN(self):
-        m1 = fnn.FlowSequential(
-            fnn.BatchNormFlow(NUM_INPUTS), fnn.InvertibleMM(NUM_INPUTS),
-            fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN))
-
-        m1.train()
         x = torch.randn(BATCH_SIZE, NUM_INPUTS)
 
         y, logdets = m1(x)
@@ -143,6 +135,32 @@ class TestFlow(unittest.TestCase):
         self.assertTrue((x - z).abs().max() < EPS,
                         'Sequential is wrong for the second run.')
 
+    def testSequentialBN(self):
+        m1 = fnn.FlowSequential(
+            fnn.BatchNormFlow(NUM_INPUTS), fnn.InvertibleMM(NUM_INPUTS),
+            fnn.CouplingLayer(NUM_INPUTS, NUM_HIDDEN, mask))
+
+        m1.train()
+        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
+
+        y, logdets = m1(x)
+        z, inv_logdets = m1(y, mode='inverse')
+
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
+                        'Sequential BN Det is not zero.')
+        self.assertTrue((x - z).abs().max() < EPS, 'Sequential BN is wrong.')
+
+        # Second run.
+        x = torch.randn(BATCH_SIZE, NUM_INPUTS)
+
+        y, logdets = m1(x)
+        z, inv_logdets = m1(y, mode='inverse')
+
+        self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
+                        'Sequential BN Det is not zero for the second run.')
+        self.assertTrue((x - z).abs().max() < EPS,
+                        'Sequential BN is wrong for the second run.')
+
         m1.eval()
         # Eval run.
         x = torch.randn(BATCH_SIZE, NUM_INPUTS)
@@ -151,7 +169,7 @@ class TestFlow(unittest.TestCase):
         z, inv_logdets = m1(y, mode='inverse')
 
         self.assertTrue((logdets + inv_logdets).abs().max() < EPS,
-                        'Sequential Det is not zero for the eval run.')
+                        'Sequential BN Det is not zero for the eval run.')
         self.assertTrue((x - z).abs().max() < EPS,
                         'Sequential is wrong for the eval run.')
         
